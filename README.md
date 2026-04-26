@@ -119,6 +119,31 @@ Useful flags:
 | `--frame-ms` | `100` | Render frame period |
 | `--log-level` | `INFO` | Python logging level |
 
+## Run at boot (systemd)
+
+Once you've confirmed the app works in the foreground, install it as a system service so it starts automatically on every boot:
+
+```bash
+sudo install -m 644 systemd/argon-oled.service /etc/systemd/system/
+sudo sed -i "s|<USER>|$USER|g; s|<HOME>|$HOME|g" /etc/systemd/system/argon-oled.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now argon-oled
+```
+
+The unit runs as your normal login user (no root) — the user just needs to be in `i2c` and `gpio` (which is the case if the foreground command worked). Logs go to the journal:
+
+```bash
+journalctl -u argon-oled -f
+```
+
+To stop or remove later:
+
+```bash
+sudo systemctl disable --now argon-oled
+sudo rm /etc/systemd/system/argon-oled.service
+sudo systemctl daemon-reload
+```
+
 ## Diagnostic scripts
 
 - `scripts/hello.py` — minimum SSD1306 smoke test. Draws a four-line test pattern. Use this first if the display isn't responding.
