@@ -14,10 +14,16 @@ label, never the direction.
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Literal
+
+import gpiod
+from gpiod.line import Bias, Direction as LineDirection, Edge
+from smbus2 import SMBus
 
 log = logging.getLogger(__name__)
 
@@ -156,14 +162,6 @@ def compute_eta_seconds(direction: Direction,
     return None
 
 
-import threading
-from datetime import timedelta
-
-import gpiod
-from gpiod.line import Bias, Direction as LineDirection, Edge
-from smbus2 import SMBus
-
-
 DEFAULT_I2C_BUS = 1
 DEFAULT_I2C_ADDRESS = 0x36
 DEFAULT_GPIOCHIP = "/dev/gpiochip0"
@@ -173,8 +171,18 @@ DEFAULT_DEBOUNCE_MS = 750
 DEFAULT_SLOPE_WINDOW_S = 60.0
 DEFAULT_HISTORY_PERIOD_S = 10.0
 DEFAULT_HISTORY_LEN = 128
+# Stale flag is set when no successful I2C read has happened in this many
+# seconds. The spec language says "3 consecutive failures"; we use time
+# rather than count so the stale window stays sane if sample_period_s is
+# tuned. With the default 5 s period, the two are equivalent.
 STALE_AFTER_S = 15.0
 CONSUMER = "argon-oled-battery"
+
+
+# ============================================================================
+# BatteryWatcher — background thread, hardware-touching code below.
+# Everything above is pure-Python and side-effect-free.
+# ============================================================================
 
 
 class BatteryWatcher(threading.Thread):
@@ -325,8 +333,12 @@ class BatteryWatcher(threading.Thread):
         )
         eta = compute_eta_seconds(direction, slope, soc_clamped)
         source_hint = self._source_hint()
-        # Log a one-shot INFO when source_hint and direction contradict, so the
-        # X1207 latch state is visible in journalctl without spamming the log.
+        # Asymmetric thresholds are deliberate: "battery + charging" is
+        # electrically impossible (no source = no charging current), so any
+        # positive slope while on battery is worth flagging. "external +
+        # discharging" can show small negative slopes from MAX17040 noise
+        # during transient source switches, so we require slope < -0.5 to
+        # avoid spamming the journal.
         contradiction: tuple[str, str] | None = None
         if (source_hint == "external" and direction == "discharging"
                 and slope is not None and slope < -0.5):
