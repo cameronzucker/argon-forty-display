@@ -388,15 +388,16 @@ class BatteryWatcher(threading.Thread):
         self.status = self._build_status(voltage, soc_raw_pct, detected=True)
 
     def run(self) -> None:
-        self._claim_gpio()
-        bus = self._open_bus()
-        if bus is None:
-            log.error("Battery watcher cannot start without I2C bus")
-            return
-        # First sample synchronously so the screen has truth on first frame.
-        self._sample_once(bus)
-        next_sample_at = time.monotonic() + self.sample_period_s
+        bus: SMBus | None = None
         try:
+            self._claim_gpio()
+            bus = self._open_bus()
+            if bus is None:
+                log.error("Battery watcher cannot start without I2C bus")
+                return
+            # First sample synchronously so the screen has truth on first frame.
+            self._sample_once(bus)
+            next_sample_at = time.monotonic() + self.sample_period_s
             while not self._stop.is_set():
                 self._drain_gpio_edges()
                 self._resolve_gpio_level()
@@ -417,10 +418,11 @@ class BatteryWatcher(threading.Thread):
                         detected=self.status.detected,
                     )
         finally:
-            try:
-                bus.close()
-            except Exception:
-                pass
+            if bus is not None:
+                try:
+                    bus.close()
+                except Exception:
+                    pass
             if self._gpio_request is not None:
                 try:
                     self._gpio_request.release()

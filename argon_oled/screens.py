@@ -743,7 +743,7 @@ class BatteryScreen:
 
     name = "battery"
 
-    def __init__(self, font: ImageFont.ImageFont, watcher):
+    def __init__(self, font: ImageFont.ImageFont, watcher: BatteryWatcher):
         self._font = font
         self._watcher = watcher
 
