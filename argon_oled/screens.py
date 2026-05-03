@@ -17,6 +17,7 @@ import psutil
 import segno
 from PIL import Image, ImageDraw, ImageFont
 
+from .battery import BatteryStatus, BatteryWatcher
 from .gps import GPSDClient
 from .hotspot import (
     HotspotConfig,
@@ -694,3 +695,98 @@ class ScreenCarousel:
         hint_w = bbox[2] - bbox[0]
         draw.rectangle((w - hint_w - 2, 0, w - 1, 9), fill=0)
         draw.text((w - hint_w - 1, 0), hint, fill=1, font=self._font)
+
+
+def _format_eta_text(direction: str, eta_seconds: int | None) -> str:
+    """Right-side label for the voltage/ETA row of BatteryScreen."""
+    if direction == "full":
+        return "full"
+    if direction == "idle":
+        return "idle"
+    if direction == "unknown" or eta_seconds is None:
+        return "—"
+    pretty = format_uptime(int(eta_seconds))
+    if direction == "charging":
+        return f"~{pretty} to full"
+    if direction == "discharging":
+        return f"~{pretty} left"
+    return "—"
+
+
+def _draw_soc_sparkline(draw: ImageDraw.ImageDraw, x: int, y: int,
+                        w: int, h: int, history: tuple[float, ...]) -> None:
+    """Borderless full-width SOC sparkline.
+
+    One column per sample, newest on the right. SOC value 0-100 maps to 0
+    to (h-1) vertical pixels.
+    """
+    if not history:
+        return
+    samples = list(history)[-w:]
+    n = len(samples)
+    base_x = x + w - n
+    baseline = y + h - 1
+    for j, v in enumerate(samples):
+        col_x = base_x + j
+        v_clamped = max(0.0, min(100.0, v))
+        bar_h = int(round((h - 1) * (v_clamped / 100.0)))
+        if bar_h > 0:
+            draw.line((col_x, baseline - bar_h + 1, col_x, baseline), fill=1)
+
+
+class BatteryScreen:
+    """Live X1207 UPS state.
+
+    Reads ``watcher.status`` per render — no I/O on the render path. The
+    watcher's lifecycle is owned by ``app.py``.
+    """
+
+    name = "battery"
+
+    def __init__(self, font: ImageFont.ImageFont, watcher):
+        self._font = font
+        self._watcher = watcher
+
+    def render(self, image: Image.Image, snap) -> None:
+        draw = ImageDraw.Draw(image)
+        w, _ = image.size
+        status: BatteryStatus = self._watcher.status
+
+        draw.text((0, 0), "battery", fill=1, font=self._font)
+
+        if not status.detected:
+            draw.text((0, 11), "no UPS detected", fill=1, font=self._font)
+            draw.text((0, 22), "(I2C 0x36 silent)", fill=1, font=self._font)
+            return
+
+        # Row 1: arrow + SOC + source label
+        _draw_dir_arrow(draw, 0, 10, status.direction)
+        soc_text = (
+            f"{int(round(status.soc_pct))}%" if status.soc_pct is not None else "?%"
+        )
+        draw.text((10, 10), soc_text, fill=1, font=self._font)
+        source_label = {
+            "battery": "on battery",
+            "external": "external",
+            "?": "??",
+        }[status.source_hint]
+        draw.text((50, 10), source_label, fill=1, font=self._font)
+
+        # Row 2: voltage + ETA (right-aligned)
+        v_text = (
+            f"{status.voltage_v:.2f}V" if status.voltage_v is not None else "?V"
+        )
+        draw.text((0, 20), v_text, fill=1, font=self._font)
+        eta_text = "stale" if status.stale else _format_eta_text(
+            status.direction, status.eta_seconds,
+        )
+        bbox = self._font.getbbox(eta_text)
+        eta_w = bbox[2] - bbox[0]
+        draw.text((w - eta_w, 20), eta_text, fill=1, font=self._font)
+
+        # Row 3: SOC bar (8 px tall, full width)
+        soc_frac = (status.soc_pct or 0.0) / 100.0
+        _draw_bar(draw, 0, 30, w, 8, soc_frac)
+
+        # SOC sparkline at y=41, height 23, full width.
+        _draw_soc_sparkline(draw, 0, 41, w, 23, status.soc_history)
