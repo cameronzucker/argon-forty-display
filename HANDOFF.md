@@ -1,22 +1,22 @@
 # Handoff
 
-Snapshot of project state for a future agent or contributor picking this up. Updated 2026-04-25.
+Snapshot of project state for a future agent or contributor picking this up. Updated 2026-05-03.
 
 ## What this is
 
-A status-display application for the Argon Forty Industria OLED on Raspberry Pi 5, plus reverse-engineered hardware notes for the module's undocumented connector and button protocol. See [README.md](README.md) for the public overview.
+A status-display application for the Argon Forty Industria OLED on Raspberry Pi 5, plus reverse-engineered hardware notes for the module's undocumented connector and button protocol — and now for the Geekworm X1207 UPS / PoE HAT it sits above. See [README.md](README.md) for the public overview.
 
 ## Current state
 
-- **Application**: 6 screens (system, network, wifi-QR, disk, gps, help). All live-tested.
-- **Hardware findings**: documented in [README.md § Hardware reference](README.md#hardware-reference). Empirically verified via `scripts/probe_buttons.py` on the test Pi. Argon Forty's own product page (`argon40.com/products/argon-industria-oled-display-module`) returns 404 — there is zero manufacturer documentation, so this README is the de facto reference for the module.
+- **Application**: 7 screens (status, battery, network, wifi-QR, disk, gps, help). All live-tested on the same Pi.
+- **Hardware findings**: documented in [README.md § Hardware reference](README.md#hardware-reference). Empirically verified via `scripts/probe_buttons.py` (button protocol) and `scripts/probe_x1207.py` (UPS signaling) on the test Pi. Argon Forty's own product page (`argon40.com/products/argon-industria-oled-display-module`) returns 404; Geekworm's X1207 docs are sparse and partially inaccurate against real hardware behavior — between the two, this README is the de facto reference.
 - **Persistence**: installed as a system-level systemd service (`/etc/systemd/system/argon-oled.service`). Running, enabled at boot. Verify with `systemctl status argon-oled` and `journalctl -u argon-oled -f`.
-- **Tested on**: Raspberry Pi 5, Debian 13 (Trixie), kernel 6.12.x, libgpiod 2.2.x, gpsd 3.25, NetworkManager.
+- **Tested on**: Raspberry Pi 5, Debian 13 (Trixie), kernel 6.12.x, libgpiod 2.2.x, gpsd 3.25, NetworkManager, Geekworm X1207 UPS / PoE HAT (MAX17040 fuel gauge at I²C 0x36).
 - **GPS receiver tested**: Waveshare LC29H over USB (CP2102N → `/dev/ttyUSB0`, NMEA at 115200, PPS via modem-control line).
 
 ## Architecture (one-paragraph version)
 
-Render loop in [argon_oled/app.py](argon_oled/app.py) drives the OLED at ~10 fps. Metrics are sampled at 1 Hz from [argon_oled/metrics.py](argon_oled/metrics.py) and passed to whichever screen is active. Screens implement a simple `Screen` protocol in [argon_oled/screens.py](argon_oled/screens.py); the `ScreenCarousel` rotates between them on button events. Buttons are watched in a daemon thread by [argon_oled/buttons.py](argon_oled/buttons.py) (libgpiod v2, debounced, classified as SHORT vs LONG by hold duration). The wifi screen reads NetworkManager via `nmcli` ([argon_oled/hotspot.py](argon_oled/hotspot.py)). The GPS screen connects to `gpsd`'s JSON socket from a background thread ([argon_oled/gps.py](argon_oled/gps.py)) and renders an xgps-style polar sky map.
+Render loop in [argon_oled/app.py](argon_oled/app.py) drives the OLED at ~10 fps. Metrics are sampled at 1 Hz from [argon_oled/metrics.py](argon_oled/metrics.py) and passed to whichever screen is active. Screens implement a simple `Screen` protocol in [argon_oled/screens.py](argon_oled/screens.py); the `ScreenCarousel` rotates between them on button events. Buttons are watched in a daemon thread by [argon_oled/buttons.py](argon_oled/buttons.py) (libgpiod v2, debounced, classified as SHORT vs LONG by hold duration). The wifi screen reads NetworkManager via `nmcli` ([argon_oled/hotspot.py](argon_oled/hotspot.py)). The GPS screen connects to `gpsd`'s JSON socket from a background thread ([argon_oled/gps.py](argon_oled/gps.py)) and renders an xgps-style polar sky map. The battery screen reads from a `BatteryWatcher` ([argon_oled/battery.py](argon_oled/battery.py)) — another background thread that owns the I²C session for the MAX17040 fuel gauge and a libgpiod-claimed GPIO6, publishing a frozen `BatteryStatus` snapshot the render loop can read lock-free. Direction is inferred from a 60 s rolling SOC slope (the MAX17040 has no `CRATE` register); GPIO6 only feeds the source-hint label, never the direction, because the line latches silent under rapid input cycling on this hardware.
 
 ## Operational notes
 
@@ -25,6 +25,9 @@ Render loop in [argon_oled/app.py](argon_oled/app.py) drives the OLED at ~10 fps
 - **gpsd device is not auto-attached** for generic CP210x USB-UART bridges — Argon's stock udev rules don't match. Run `sudo gpsdctl add /dev/ttyUSB0` (or whatever ttyUSB ends up being) once after plugging in the GPS. To make this permanent across reboots, add `DEVICES="/dev/ttyUSB0"` to `/etc/default/gpsd`.
 - **`nmcli --show-secrets` on AP-mode connections works without sudo** under default Trixie polkit policy — that's why the wifi screen can build the QR payload as the runtime user.
 - **`uv` lives in `~/.local/bin`** which isn't on systemd's default PATH. The unit explicitly sets `Environment=PATH=` and uses an absolute `ExecStart`.
+- **X1207 GPIO6 is bouncy AND can latch silent.** Each USB-C / PoE plug or unplug typically produces 1-4 edges over ~5-10 s; after ~3 rapid input transitions in succession the line stops emitting entirely until the UPS is rebooted. The screen treats GPIO6 as a *hint* on top of the SOC trend rather than ground truth. Don't trust it as a single-shot status read.
+- **X1207 GPIO16 is not a Pi-driven output on this unit**, despite what older community scripts (e.g. `geekworm-com/x120x` and derivatives) assume. With pull-up bias it reads constant low through every input transition. Reading it does not yield meaningful charging-state information.
+- **The X1207's USB-C input cannot be combined with the Pi's own USB-C** (they fight at the rail). Use the X1207's USB-C jack only.
 
 ## Things that aren't done (but could be)
 
