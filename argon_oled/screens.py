@@ -784,9 +784,10 @@ class BatteryScreen:
         eta_w = bbox[2] - bbox[0]
         draw.text((w - eta_w, 20), eta_text, fill=1, font=self._font)
 
-        # Row 3: SOC bar (8 px tall, full width)
+        # Row 3: SOC bar (8 px tall, full width). 2 px breathing room above
+        # the bar so the voltage text on row 2 doesn't visually fuse with it.
         soc_frac = (status.soc_pct or 0.0) / 100.0
-        _draw_bar(draw, 0, 30, w, 8, soc_frac)
+        _draw_bar(draw, 0, 32, w, 8, soc_frac)
 
         # SOC sparkline at y=41, height 23, full width.
         _draw_soc_sparkline(draw, 0, 41, w, 23, status.soc_history)
