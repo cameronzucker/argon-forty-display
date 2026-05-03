@@ -20,8 +20,10 @@ from luma.core.interface.serial import i2c
 from luma.oled.device import ssd1306
 
 from . import metrics
+from .battery import BatteryWatcher
 from .buttons import ButtonEvent, ButtonWatcher
 from .screens import (
+    BatteryScreen,
     DiskScreen,
     GPSScreen,
     HelpScreen,
@@ -130,6 +132,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p.add_argument("--debounce-ms", type=int, default=50)
     p.add_argument("--no-buttons", action="store_true",
                    help="disable button watcher (useful if line is contested)")
+    p.add_argument("--no-battery", action="store_true",
+                   help="disable the X1207 battery watcher (e.g. on a Pi without the HAT)")
+    p.add_argument("--battery-i2c-bus", type=int, default=1)
+    p.add_argument("--battery-i2c-address", type=lambda x: int(x, 0), default=0x36)
+    p.add_argument("--battery-gpio-line", type=int, default=6)
+    p.add_argument("--battery-debounce-ms", type=int, default=750)
+    p.add_argument("--battery-sample-ms", type=int, default=5000)
     p.add_argument("--frame-ms", type=int, default=100)
     p.add_argument("--log-level", default="INFO")
     p.add_argument(
@@ -150,17 +159,29 @@ def run(argv: list[str] | None = None) -> int:
     device = _open_device(args.i2c_port, args.i2c_address)
 
     font = ImageFont.load_default()
-    carousel = ScreenCarousel(
-        screens=[
-            StatusScreen(font),
-            NetworkScreen(font),
-            HotspotScreen(font, connection_name=args.hotspot_connection),
-            DiskScreen(font),
-            GPSScreen(font),
-            HelpScreen(font),
-        ],
-        font=font,
-    )
+
+    battery_watcher: BatteryWatcher | None = None
+    if not args.no_battery:
+        battery_watcher = BatteryWatcher(
+            i2c_bus=args.battery_i2c_bus,
+            i2c_address=args.battery_i2c_address,
+            gpio_line=args.battery_gpio_line,
+            debounce_ms=args.battery_debounce_ms,
+            sample_period_s=args.battery_sample_ms / 1000.0,
+        )
+        battery_watcher.start()
+
+    screens = [StatusScreen(font)]
+    if battery_watcher is not None:
+        screens.append(BatteryScreen(font, battery_watcher))
+    screens.extend([
+        NetworkScreen(font),
+        HotspotScreen(font, connection_name=args.hotspot_connection),
+        DiskScreen(font),
+        GPSScreen(font),
+        HelpScreen(font),
+    ])
+    carousel = ScreenCarousel(screens=screens, font=font)
 
     events: queue.Queue[ButtonEvent] | None = None
     watcher: ButtonWatcher | None = None
@@ -185,6 +206,9 @@ def run(argv: list[str] | None = None) -> int:
         if watcher is not None:
             watcher.stop()
             watcher.join(timeout=1.0)
+        if battery_watcher is not None:
+            battery_watcher.stop()
+            battery_watcher.join(timeout=1.0)
     return 0
 
 
