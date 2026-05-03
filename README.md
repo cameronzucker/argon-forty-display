@@ -51,6 +51,21 @@ On current Raspberry Pi 5 Trixie kernels (`6.12.x`, `libgpiod 2.2.x`), the 40-pi
 
 Polling I2C address `0x3C` (the SSD1306) for register reads while pressing buttons yields zero changes. The buttons are pure GPIO; do not look for them on I2C. No other I2C addresses appear when the module is connected.
 
+### X1207 UPS HAT
+
+The Argon Industria stack sits above a Geekworm X1207 UPS / PoE module on this Pi. Geekworm publishes sparse documentation on the X1207's signaling, and existing community scripts make assumptions that don't match what the hardware actually does. The following was determined empirically with `scripts/probe_x1207.py` by cycling PoE and USB-C inputs across two repetitions while watching every claimable GPIO line on `gpiochip0` and the fuel gauge over I²C-1.
+
+**Fuel gauge — I²C-1 @ `0x36`.** A MAX17040-family chip. The `VERSION` register at `0x08` returns `0x0002` on this unit, confirming the older MAX17040/41 silicon (not the MAX17048, which would carry a `CRATE` charge-rate register at `0x16`). The practical consequence: **charge vs. discharge cannot be read directly from a register** — direction must be derived from a SOC time-series, from GPIO6 (see below), or both. Standard MAX17040 register layout applies: `VCELL` at `0x02` (× 78.125 µV/LSB), `SOC` at `0x04` (upper byte = whole percent, lower byte = fractional /256), `MODE` at `0x06`, `CONFIG` at `0x0C`. The chip transmits MSB first; SMBus reads come back little-endian, so each word must be byte-swapped before interpretation.
+
+**GPIO6 — power-source change indicator (approximate).** With internal pull-up bias and BOTH-edge detection, GPIO6 fires edges around USB-C / PoE plug and unplug events, but it is **not a clean state line**:
+
+- **Bouncy.** Each plug or unplug typically produces 1-4 edges over ~5-10 seconds. Software debounce of ≥500 ms is required to extract a stable level.
+- **Can latch silent.** After three rapid input transitions in succession, the X1207's state machine on this board stopped emitting GPIO6 events entirely. Five subsequent power transitions across the same input pins produced zero edges, while the same transitions before the latch had produced 10 edges. Recovery appears to require a reboot of the UPS. Treat GPIO6 as a *hint* layered on top of the more reliable SOC trend, not as ground truth.
+
+**GPIO16 — *not* a useful status line on this unit.** Existing community scripts (and prior-art Geekworm-adjacent code) interpret GPIO16 as a charge-enable indicator. With pull-up bias applied during the probe, GPIO16 read constant low through *every* input transition across both probe rounds — meaning it is externally pinned, not driven dynamically. Reading it does not yield meaningful charging-state information regardless of vendor docs. Don't depend on it.
+
+**No other header lines are wired.** All 19 other unclaimed BCM lines on `gpiochip0` (`5, 7-13, 17, 19-27`) showed zero edges across all test phases. Only GPIO6 carries any X1207 power-event signal; everything else is electrically idle.
+
 ---
 
 ## Application
@@ -148,6 +163,7 @@ sudo systemctl daemon-reload
 
 - `scripts/hello.py` — minimum SSD1306 smoke test. Draws a four-line test pattern. Use this first if the display isn't responding.
 - `scripts/probe_buttons.py` — the tool used to reverse-engineer the button protocol. Watches every unclaimed GPIO header line on `gpiochip0` for edge events with `PULL_UP` bias and concurrently polls I2C `0x3C` for changing reads. Press buttons in known sequences and read the per-line summary on Ctrl-C.
+- `scripts/probe_x1207.py` — the tool used to reverse-engineer the X1207 UPS HAT's signaling. Runs an autonomous 8-step PoE/USB-C cycling sequence while watching every claimable GPIO line and polling the MAX17040 fuel gauge. Detaches cleanly so the operator can yank power without killing the probe. Output goes to `/tmp/x1207_probe_<timestamp>.log` with a per-phase summary at the end.
 
 ---
 
