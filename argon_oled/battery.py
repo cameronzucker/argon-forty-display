@@ -93,7 +93,12 @@ def compute_slope(samples: list[tuple[float, float]],
 
     ``samples`` is ``[(monotonic_seconds, soc_pct), ...]`` in any order.
     Only samples within ``window_s`` of the most recent timestamp are used.
-    Returns None if fewer than 3 samples fall in the window.
+    Returns None if fewer than 3 samples fall in the window or all samples
+    share the same timestamp.
+
+    Time values are shifted to start at zero before the least-squares math
+    so the formula stays numerically robust — raw monotonic timestamps run
+    into the millions and would lose low-order bits to cancellation.
     """
     if not samples:
         return None
@@ -102,16 +107,18 @@ def compute_slope(samples: list[tuple[float, float]],
     n = len(in_window)
     if n < 3:
         return None
-    # Least-squares: slope = (n*sum(ty) - sum(t)*sum(y)) / (n*sum(t^2) - sum(t)^2)
-    sum_t = sum(t for t, _ in in_window)
-    sum_y = sum(y for _, y in in_window)
-    sum_ty = sum(t * y for t, y in in_window)
-    sum_tt = sum(t * t for t, _ in in_window)
+    t0 = min(t for t, _ in in_window)
+    ts = [t - t0 for t, _ in in_window]
+    ys = [y for _, y in in_window]
+    sum_t = sum(ts)
+    sum_y = sum(ys)
+    sum_ty = sum(t * y for t, y in zip(ts, ys))
+    sum_tt = sum(t * t for t in ts)
     denom = n * sum_tt - sum_t * sum_t
-    if denom == 0:
+    if denom <= 0:
         return None
     slope_per_s = (n * sum_ty - sum_t * sum_y) / denom
-    return slope_per_s * 60.0  # %/s -> %/min
+    return slope_per_s * 60.0
 
 
 def classify_direction(slope_pct_per_min: float | None,
@@ -143,7 +150,7 @@ def compute_eta_seconds(direction: Direction,
             or abs(slope_pct_per_min) < 0.2):
         return None
     if direction == "charging":
-        return round((100.0 - soc_pct) / slope_pct_per_min * 60.0)
+        return max(0, round((100.0 - soc_pct) / slope_pct_per_min * 60.0))
     if direction == "discharging":
-        return round(soc_pct / -slope_pct_per_min * 60.0)
+        return max(0, round(soc_pct / -slope_pct_per_min * 60.0))
     return None
