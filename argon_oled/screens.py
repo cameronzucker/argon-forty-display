@@ -316,6 +316,40 @@ def _draw_sparkline(draw: ImageDraw.ImageDraw, x: int, y: int, w: int, h: int,
             draw.line((col_x, top, col_x, baseline), fill=1)
 
 
+def _draw_dir_arrow(draw: ImageDraw.ImageDraw, x: int, y: int,
+                    direction: str, size: int = 8) -> None:
+    """8 x 8 (by default) direction glyph drawn as primitives.
+
+    Avoids font glyphs because the default Pillow bitmap doesn't render
+    Unicode arrows. ``unknown`` draws nothing.
+    """
+    if direction == "charging":
+        # Filled up-triangle: apex top, base bottom.
+        draw.polygon(
+            [(x, y + size - 1),
+             (x + size - 1, y + size - 1),
+             (x + (size - 1) // 2, y)],
+            fill=1,
+        )
+    elif direction == "discharging":
+        # Filled down-triangle: base top, apex bottom.
+        draw.polygon(
+            [(x, y),
+             (x + size - 1, y),
+             (x + (size - 1) // 2, y + size - 1)],
+            fill=1,
+        )
+    elif direction == "full":
+        # Filled horizontal bar mid-height.
+        mid = y + (size - 1) // 2
+        draw.rectangle((x + 1, mid - 1, x + size - 2, mid + 1), fill=1)
+    elif direction == "idle":
+        # Thin line through the middle.
+        mid = y + (size - 1) // 2
+        draw.line((x, mid, x + size - 1, mid), fill=1)
+    # "unknown" draws nothing.
+
+
 def _humanize_rate(bytes_per_sec: float) -> str:
     if bytes_per_sec >= 1024 ** 2:
         return f"{bytes_per_sec / 1024 ** 2:.1f}M"
